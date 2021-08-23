@@ -7,8 +7,8 @@ class RequestAssistants {
   static Future<dynamic>  getRequest(String url) async{
    // http.Response response = await http.get(url);
 
-    var url1 = Uri.parse(url);
-    http.Response response = await http.get(url1) ;
+   // var url1 = Uri.parse(url);
+    http.Response response = await http.get(Uri.parse(url));
 
     try{
       if (response.statusCode == 200) {

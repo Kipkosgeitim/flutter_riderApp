@@ -14,10 +14,12 @@ void main() async {
   await Firebase.initializeApp();
   runApp(MyApp());
 }
+
 DatabaseReference userRef = FirebaseDatabase.instance.reference().child("user");
+DatabaseReference driversRef =
+    FirebaseDatabase.instance.reference().child("drivers");
 
 class MyApp extends StatelessWidget {
-
   // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
@@ -26,14 +28,15 @@ class MyApp extends StatelessWidget {
       child: MaterialApp(
         title: 'Taxi Rider App',
         theme: ThemeData(
-
           primarySwatch: Colors.blue,
         ),
-        initialRoute: FirebaseAuth.instance.currentUser == null ? LoginScreen.idScreen : MainScreen.idScreen ,
+        initialRoute: FirebaseAuth.instance.currentUser == null
+            ? LoginScreen.idScreen
+            : MainScreen.idScreen,
         routes: {
-          RegistrationScreen.idScreen:(context) =>RegistrationScreen(),
-          LoginScreen.idScreen:(context) =>LoginScreen(),
-          MainScreen.idScreen:(context) =>MainScreen(),
+          RegistrationScreen.idScreen: (context) => RegistrationScreen(),
+          LoginScreen.idScreen: (context) => LoginScreen(),
+          MainScreen.idScreen: (context) => MainScreen(),
         },
         debugShowCheckedModeBanner: false,
       ),

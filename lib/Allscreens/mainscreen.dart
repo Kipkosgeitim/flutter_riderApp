@@ -6,23 +6,26 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter_geofire/flutter_geofire.dart';
 import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:riderapp/AllWidgets/Divider.dart';
+import 'package:riderapp/AllWidgets/noDriverAvailableDialog.dart';
 import 'package:riderapp/AllWidgets/progressDialog.dart';
 import 'package:riderapp/Allscreens/loginScreen.dart';
 import 'package:riderapp/Allscreens/searchScreen.dart';
 import 'package:riderapp/Assistants/AssistantMethods.dart';
+import 'package:riderapp/Assistants/geoFireAssistant.dart';
 import 'package:riderapp/DataHandler/appData.dart';
 import 'package:riderapp/Models/directionDetails.dart';
+import 'package:riderapp/Models/nearbyAvailableDrivers.dart';
+import 'package:riderapp/main.dart';
 import 'package:riderapp/mapsConfig.dart';
 
-
 class MainScreen extends StatefulWidget {
-
   static const String idScreen = "mainScreen";
 
   @override
@@ -30,7 +33,6 @@ class MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
-
   Completer<GoogleMapController> _controllerGoogleMap = Completer();
   GoogleMapController newGoogleMapController;
 
@@ -41,19 +43,24 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
 
   Position currentPosition;
   var geoLocator = Geolocator();
-  double bottomPaddingOfMap =0;
+  double bottomPaddingOfMap = 0;
 
   Set<Marker> markersSet = {};
   Set<Circle> circlesSet = {};
 
-  double rideDetailsContainerHeight= 0;
-  double requestRideContainerHeight= 0;
+  double rideDetailsContainerHeight = 0;
+  double requestRideContainerHeight = 0;
   double searchContainerHeight = 300.0;
-  bool drawerOpen =true;
+  bool drawerOpen = true;
+  bool nearbyAvailableDriverKeyLoaded = false;
 
   DirectionDetails tripDirectionDetails;
 
   DatabaseReference rideRequestRef;
+
+  BitmapDescriptor nearbyIcon;
+
+  List<NearbyAvailableDrivers> availableDrivers;
 
   @override
   void initState() {
@@ -63,13 +70,12 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     AssistantMethods.getCurrentOnlineUserInfo();
   }
 
-  void saveRideRequest(){
+  void saveRideRequest() {
+    rideRequestRef =
+        FirebaseDatabase.instance.reference().child("Ride Requests").push();
 
-
-    rideRequestRef = FirebaseDatabase.instance.reference().child("Ride Requests").push();
-
-    var pickUp = Provider.of<AppData>(context,listen: false).pickUpLocation;
-    var dropOff = Provider.of<AppData>(context,listen: false).dropOffLocation;
+    var pickUp = Provider.of<AppData>(context, listen: false).pickUpLocation;
+    var dropOff = Provider.of<AppData>(context, listen: false).dropOffLocation;
 
     Map pickUpLocMap = {
       "latitude": pickUp.latitude.toString(),
@@ -82,7 +88,6 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
     };
 
     Map rideInfoMap = {
-
       "driver_id": "waiting",
       "payment_method": "cash",
       "pickup": pickUpLocMap,
@@ -90,82 +95,150 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
       "created_at": DateTime.now().toString(),
       "rider_name": currentUserInfo.name,
       "rider_phone": currentUserInfo.phone,
-      "pickup_address":pickUp.placeName,
-      "dropoff_address":dropOff.placeName,
-
+      "pickup_address": pickUp.placeName,
+      "dropoff_address": dropOff.placeName,
     };
 
     rideRequestRef.set(rideInfoMap);
-
   }
 
-  void cancelRideRequest(){
-
+  void cancelRideRequest() {
     rideRequestRef.remove();
   }
 
-
-  void displayRequestRideContainer(){
-
+  void displayRequestRideContainer() {
     setState(() {
-
       requestRideContainerHeight = 250.0;
       rideDetailsContainerHeight = 0;
       bottomPaddingOfMap = 230.0;
       drawerOpen = true;
-
-
     });
     saveRideRequest();
   }
 
-  resetApp(){
-   setState(() {
-
-     searchContainerHeight= 300.0;
-     rideDetailsContainerHeight=0;
-     requestRideContainerHeight = 0;
-     bottomPaddingOfMap = 230.0;
-     drawerOpen = true;
-
-     polylineSet.clear();
-     markersSet.clear();
-     circlesSet.clear();
-     pLineCoordinates.clear();
-   });
-
-   locatePosition();
-
-
-  }
-
-  void displayRideDetailsContainer() async{
-    await getPlaceDirection();
+  resetApp() {
     setState(() {
-      searchContainerHeight= 0;
-      rideDetailsContainerHeight=240.0;
+      searchContainerHeight = 300.0;
+      rideDetailsContainerHeight = 0;
+      requestRideContainerHeight = 0;
       bottomPaddingOfMap = 230.0;
-      drawerOpen = false;
+      drawerOpen = true;
 
+      polylineSet.clear();
+      markersSet.clear();
+      circlesSet.clear();
+      pLineCoordinates.clear();
     });
 
-
+    locatePosition();
   }
 
-  void locatePosition ()async {
-    Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+  void initGeoFireListener() {
+    Geofire.initialize("availableDrivers");
+
+    Geofire.queryAtLocation(
+            currentPosition.latitude, currentPosition.longitude, 15)
+        .listen((map) {
+      print(map);
+      if (map != null) {
+        var callBack = map['callBack'];
+
+        //latitude will be retrieved from map['latitude']
+        //longitude will be retrieved from map['longitude']
+
+        switch (callBack) {
+          case Geofire.onKeyEntered:
+            NearbyAvailableDrivers nearbyAvailableDrivers =
+                NearbyAvailableDrivers();
+            nearbyAvailableDrivers.key = map['key'];
+            nearbyAvailableDrivers.latitude = map['latitude'].toString();
+            nearbyAvailableDrivers.longitude = map['longitude'].toString();
+            GeoFireAssistant.nearByAvailableDriversList
+                .add(nearbyAvailableDrivers);
+            if (nearbyAvailableDriverKeyLoaded == true) {
+              updateAvailableDriversOnMap();
+            }
+            break;
+
+          case Geofire.onKeyExited:
+            GeoFireAssistant.removeDriverFromList(map['key']);
+            updateAvailableDriversOnMap();
+            break;
+
+          case Geofire.onKeyMoved:
+            // Update your key's location
+            NearbyAvailableDrivers nearbyAvailableDrivers =
+                NearbyAvailableDrivers();
+            nearbyAvailableDrivers.key = map['key'];
+            nearbyAvailableDrivers.latitude = map['latitude'].toString();
+            nearbyAvailableDrivers.longitude = map['longitude'].toString();
+            GeoFireAssistant.updateDriverNearbyLocation(nearbyAvailableDrivers);
+            updateAvailableDriversOnMap();
+            break;
+
+          case Geofire.onGeoQueryReady:
+            // All Intial Data is loaded
+            // print(map['result']);
+            updateAvailableDriversOnMap();
+
+            break;
+        }
+      }
+
+      setState(() {});
+    });
+  }
+
+  void updateAvailableDriversOnMap() {
+    setState(() {
+      markersSet.clear();
+    });
+    Set<Marker> tmarkers = Set<Marker>();
+    for (NearbyAvailableDrivers driver
+        in GeoFireAssistant.nearByAvailableDriversList) {
+      LatLng driverAvailablePosition =
+          LatLng(double.parse(driver.latitude), double.parse(driver.longitude));
+
+      Marker marker = Marker(
+        markerId: MarkerId('driver${driver.key}'),
+        position: driverAvailablePosition,
+        icon: nearbyIcon,
+        rotation: AssistantMethods.createRandomNumber(360),
+      );
+      tmarkers.add(marker);
+    }
+    setState(() {
+      markersSet = tmarkers;
+    });
+  }
+
+  void displayRideDetailsContainer() async {
+    await getPlaceDirection();
+    setState(() {
+      searchContainerHeight = 0;
+      rideDetailsContainerHeight = 240.0;
+      bottomPaddingOfMap = 230.0;
+      drawerOpen = false;
+    });
+  }
+
+  void locatePosition() async {
+    Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high);
     currentPosition = position;
 
     LatLng latlatPosoition = LatLng(position.latitude, position.longitude);
 
-    CameraPosition cameraPosition = new CameraPosition(target: latlatPosoition,zoom: 14);
-    newGoogleMapController.animateCamera(CameraUpdate.newCameraPosition(cameraPosition));
+    CameraPosition cameraPosition =
+        new CameraPosition(target: latlatPosoition, zoom: 14);
+    newGoogleMapController
+        .animateCamera(CameraUpdate.newCameraPosition(cameraPosition));
 
-    String  address = await AssistantMethods.searchCoordinatesAddress(position, context);
-    print("This is your Address::" +address);
-
+    String address =
+        await AssistantMethods.searchCoordinatesAddress(position, context);
+    print("This is your Address::" + address);
+    initGeoFireListener();
   }
-
 
   static final CameraPosition _kGooglePlex = CameraPosition(
     target: LatLng(37.42796133580664, -122.085749655962),
@@ -173,11 +246,10 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
   );
   @override
   Widget build(BuildContext context) {
-
+    createIconMarker();
     return Scaffold(
       key: scafoldKey,
       appBar: AppBar(
-
         title: Text('Main Screen'),
       ),
       drawer: Container(
@@ -190,49 +262,73 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                 height: 165.0,
                 child: DrawerHeader(
                   decoration: BoxDecoration(color: Colors.white),
-                    child:Row(
-                      children: [
-                        Image.asset('images/user_icon.png',height: 65.0,width: 65.0,),
-                        SizedBox(width: 16.0,),
-                        Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text("Profile Name",style: TextStyle(fontSize: 16.0,fontFamily: 'Brand-Bold'),),
-                            SizedBox(height: 6.0,),
-                            Text('Visit Profile'),
-                          ],
-                        ),
-
-                      ],
-                    ),
+                  child: Row(
+                    children: [
+                      Image.asset(
+                        'images/user_icon.png',
+                        height: 65.0,
+                        width: 65.0,
+                      ),
+                      SizedBox(
+                        width: 16.0,
+                      ),
+                      Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            "Profile Name",
+                            style: TextStyle(
+                                fontSize: 16.0, fontFamily: 'Brand-Bold'),
+                          ),
+                          SizedBox(
+                            height: 6.0,
+                          ),
+                          Text('Visit Profile'),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
-
               DividerWidget(),
-              SizedBox(height: 12.0,),
+              SizedBox(
+                height: 12.0,
+              ),
               ListTile(
                 leading: Icon(Icons.history),
-                title: Text("History",style: TextStyle(fontSize: 15.0),),
+                title: Text(
+                  "History",
+                  style: TextStyle(fontSize: 15.0),
+                ),
               ),
               ListTile(
                 leading: Icon(Icons.person),
-                title: Text("Visit Profile",style: TextStyle(fontSize: 15.0),),
+                title: Text(
+                  "Visit Profile",
+                  style: TextStyle(fontSize: 15.0),
+                ),
               ),
               ListTile(
                 leading: Icon(Icons.info),
-                title: Text("About",style: TextStyle(fontSize: 15.0),),
+                title: Text(
+                  "About",
+                  style: TextStyle(fontSize: 15.0),
+                ),
               ),
               GestureDetector(
-                onTap: (){
+                onTap: () {
                   FirebaseAuth.instance.signOut();
-                  Navigator.pushNamedAndRemoveUntil(context, LoginScreen.idScreen, (route) => false);
+                  Navigator.pushNamedAndRemoveUntil(
+                      context, LoginScreen.idScreen, (route) => false);
                 },
                 child: ListTile(
                   leading: Icon(Icons.logout),
-                  title: Text("Sign Out",style: TextStyle(fontSize: 15.0),),
+                  title: Text(
+                    "Sign Out",
+                    style: TextStyle(fontSize: 15.0),
+                  ),
                 ),
               ),
-
             ],
           ),
         ),
@@ -250,30 +346,25 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
             polylines: polylineSet,
             markers: markersSet,
             circles: circlesSet,
-            onMapCreated: (GoogleMapController controller){
-
+            onMapCreated: (GoogleMapController controller) {
               _controllerGoogleMap.complete(controller);
-              newGoogleMapController=controller;
+              newGoogleMapController = controller;
 
-              bottomPaddingOfMap= 300.0;
+              bottomPaddingOfMap = 300.0;
               locatePosition();
-
             },
-
           ),
           //drawer button
           Positioned(
             top: 38.0,
             left: 22.0,
             child: GestureDetector(
-              onTap:() {
-                if(drawerOpen){
+              onTap: () {
+                if (drawerOpen) {
                   scafoldKey.currentState.openDrawer();
-                }else{
-
+                } else {
                   resetApp();
                 }
-
               },
               child: Container(
                 decoration: BoxDecoration(
@@ -284,18 +375,17 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                       color: Colors.black,
                       blurRadius: 6.0,
                       spreadRadius: 0.5,
-                      offset: Offset(
-                        0.7,
-                        0.7
-                      ),
+                      offset: Offset(0.7, 0.7),
                     ),
                   ],
                 ),
                 child: CircleAvatar(
-
                   backgroundColor: Colors.white,
                   radius: 20.0,
-                  child: Icon((drawerOpen)? Icons.menu : Icons.close,color: Colors.black,),
+                  child: Icon(
+                    (drawerOpen) ? Icons.menu : Icons.close,
+                    color: Colors.black,
+                  ),
                 ),
               ),
             ),
@@ -312,50 +402,58 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                 height: searchContainerHeight,
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.only(topLeft: Radius.circular(18.0),topRight: Radius.circular(18.0)),
-                  boxShadow:[
+                  borderRadius: BorderRadius.only(
+                      topLeft: Radius.circular(18.0),
+                      topRight: Radius.circular(18.0)),
+                  boxShadow: [
                     BoxShadow(
                       blurRadius: 16.0,
                       color: Colors.black,
                       spreadRadius: 0.5,
-                      offset: Offset(0.7,0.7),
-
+                      offset: Offset(0.7, 0.7),
                     ),
                   ],
                 ),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0,vertical: 18.0),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 24.0, vertical: 18.0),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       SizedBox(height: 6.0),
-                      Text("Hi there",style: TextStyle(fontSize: 11.0),),
-                      Text("Where to",style: TextStyle(fontSize: 18.0, fontFamily: "Brand-Bold"),),
+                      Text(
+                        "Hi there",
+                        style: TextStyle(fontSize: 11.0),
+                      ),
+                      Text(
+                        "Where to",
+                        style:
+                            TextStyle(fontSize: 18.0, fontFamily: "Brand-Bold"),
+                      ),
                       SizedBox(height: 20.0),
-
                       GestureDetector(
-                        onTap: () async{
-                          var res =  await Navigator.push(context, MaterialPageRoute(builder: (context)=>SearchScreen()));
+                        onTap: () async {
+                          var res = await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (context) => SearchScreen()));
 
-                          if(res == "obtainDirection"){
-
-                           // await getPlaceDirection();
+                          if (res == "obtainDirection") {
+                            // await getPlaceDirection();
                             displayRideDetailsContainer();
                           }
-
-
                         },
                         child: Container(
                           decoration: BoxDecoration(
                             color: Colors.white,
-                            borderRadius: BorderRadius.only(topLeft: Radius.circular(5.0)),
-                            boxShadow:[
+                            borderRadius: BorderRadius.only(
+                                topLeft: Radius.circular(5.0)),
+                            boxShadow: [
                               BoxShadow(
                                 blurRadius: 16.0,
                                 color: Colors.black54,
                                 spreadRadius: 0.5,
-                                offset: Offset(0.7,0.7),
-
+                                offset: Offset(0.7, 0.7),
                               ),
                             ],
                           ),
@@ -363,8 +461,13 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                             padding: const EdgeInsets.all(10.0),
                             child: Row(
                               children: [
-                                Icon(Icons.search,color: Colors.blueAccent,),
-                                SizedBox(width: 10.0,),
+                                Icon(
+                                  Icons.search,
+                                  color: Colors.blueAccent,
+                                ),
+                                SizedBox(
+                                  width: 10.0,
+                                ),
                                 Text("Search DropOff"),
                               ],
                             ),
@@ -373,36 +476,64 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                       ),
                       Row(
                         children: [
-                          Icon(Icons.home,color: Colors.grey,),
-                          SizedBox(width: 12.0,),
+                          Icon(
+                            Icons.home,
+                            color: Colors.grey,
+                          ),
+                          SizedBox(
+                            width: 12.0,
+                          ),
                           Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                Provider.of<AppData>(context).pickUpLocation!=null
-                                    ?  Provider.of<AppData>(context).pickUpLocation.placeName
-                                    :"Add Home",
+                                Provider.of<AppData>(context).pickUpLocation !=
+                                        null
+                                    ? Provider.of<AppData>(context)
+                                        .pickUpLocation
+                                        .placeName
+                                    : "Add Home",
                               ),
-                              SizedBox(height: 4.0,),
-                              Text("Your Living Home Address",style: TextStyle(color: Colors.black54,fontSize: 12.0),),
+                              SizedBox(
+                                height: 4.0,
+                              ),
+                              Text(
+                                "Your Living Home Address",
+                                style: TextStyle(
+                                    color: Colors.black54, fontSize: 12.0),
+                              ),
                             ],
                           ),
                         ],
                       ),
-
-                      SizedBox(height: 10.0,),
+                      SizedBox(
+                        height: 10.0,
+                      ),
                       DividerWidget(),
-                      SizedBox(height: 16.0,),
+                      SizedBox(
+                        height: 16.0,
+                      ),
                       Row(
                         children: [
-                          Icon(Icons.work,color: Colors.grey,),
-                          SizedBox(width: 12.0,),
+                          Icon(
+                            Icons.work,
+                            color: Colors.grey,
+                          ),
+                          SizedBox(
+                            width: 12.0,
+                          ),
                           Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text("Add Work"),
-                              SizedBox(height: 4.0,),
-                              Text("Your Work Address",style: TextStyle(color: Colors.black54,fontSize: 12.0),),
+                              SizedBox(
+                                height: 4.0,
+                              ),
+                              Text(
+                                "Your Work Address",
+                                style: TextStyle(
+                                    color: Colors.black54, fontSize: 12.0),
+                              ),
                             ],
                           ),
                         ],
@@ -414,78 +545,113 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
             ),
           ),
           Positioned(
-
             bottom: 0.0,
             left: 0.0,
             right: 0.0,
-            child:AnimatedSize(
-
+            child: AnimatedSize(
               vsync: this,
               curve: Curves.bounceIn,
               duration: new Duration(milliseconds: 160),
               child: Container(
                 height: rideDetailsContainerHeight,
-
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.only(topLeft: Radius.circular(16.0),topRight: Radius.circular(16.0)),
+                  borderRadius: BorderRadius.only(
+                      topLeft: Radius.circular(16.0),
+                      topRight: Radius.circular(16.0)),
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black,
                       blurRadius: 16.0,
                       spreadRadius: 0.5,
-                      offset: Offset(0.7,0.7),
+                      offset: Offset(0.7, 0.7),
                     ),
                   ],
                 ),
-
                 child: Padding(
-                  padding:  EdgeInsets.symmetric(vertical:17.0),
+                  padding: EdgeInsets.symmetric(vertical: 17.0),
                   child: Column(
                     children: [
                       Container(
                         width: double.infinity,
                         color: Colors.tealAccent[100],
-
                         child: Padding(
                           padding: EdgeInsets.symmetric(horizontal: 16.0),
                           child: Row(
                             children: [
-                              Image.asset("images/taxi.png",height: 70.0,width: 80.0,),
-                              SizedBox(width: 16.0,),
+                              Image.asset(
+                                "images/taxi.png",
+                                height: 70.0,
+                                width: 80.0,
+                              ),
+                              SizedBox(
+                                width: 16.0,
+                              ),
                               Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text("Car",style: TextStyle(fontFamily: "Brand-Bold",fontSize: 18.0),),
-                                  Text(((tripDirectionDetails !=null) ? tripDirectionDetails.distanceText :''),style: TextStyle(color: Colors.grey,fontSize: 18.0),),
+                                  Text(
+                                    "Car",
+                                    style: TextStyle(
+                                        fontFamily: "Brand-Bold",
+                                        fontSize: 18.0),
+                                  ),
+                                  Text(
+                                    ((tripDirectionDetails != null)
+                                        ? tripDirectionDetails.distanceText
+                                        : ''),
+                                    style: TextStyle(
+                                        color: Colors.grey, fontSize: 18.0),
+                                  ),
                                 ],
                               ),
-                              Expanded(child: Container(),),
-                              Text((tripDirectionDetails !=null) ?'\$${AssistantMethods.calculateFares(tripDirectionDetails)}' :'',style: TextStyle(fontFamily: "Brand-Bold",fontSize: 18.0),),
-
+                              Expanded(
+                                child: Container(),
+                              ),
+                              Text(
+                                (tripDirectionDetails != null)
+                                    ? '\$${AssistantMethods.calculateFares(tripDirectionDetails)}'
+                                    : '',
+                                style: TextStyle(
+                                    fontFamily: "Brand-Bold", fontSize: 18.0),
+                              ),
                             ],
                           ),
                         ),
                       ),
-                      SizedBox(height: 20.0,),
+                      SizedBox(
+                        height: 20.0,
+                      ),
                       Padding(
-                        padding:EdgeInsets.symmetric(horizontal: 20.0) ,
+                        padding: EdgeInsets.symmetric(horizontal: 20.0),
                         child: Row(
                           children: [
-                            Icon(FontAwesomeIcons.moneyCheckAlt,size: 18.0,color: Colors.black54,),
-                            SizedBox(width:16.0),
+                            Icon(
+                              FontAwesomeIcons.moneyCheckAlt,
+                              size: 18.0,
+                              color: Colors.black54,
+                            ),
+                            SizedBox(width: 16.0),
                             Text("Cash"),
-                            SizedBox(width: 6.0,),
-                            Icon(Icons.keyboard_arrow_down,color: Colors.black54,size: 16.0),
+                            SizedBox(
+                              width: 6.0,
+                            ),
+                            Icon(Icons.keyboard_arrow_down,
+                                color: Colors.black54, size: 16.0),
                           ],
                         ),
                       ),
-                      SizedBox(height: 24.0,),
+                      SizedBox(
+                        height: 24.0,
+                      ),
                       Padding(
                         padding: EdgeInsets.symmetric(horizontal: 16.0),
                         child: RaisedButton(
-                          onPressed: (){
+                          onPressed: () {
                             displayRequestRideContainer();
+                            availableDrivers =
+                                GeoFireAssistant.nearByAvailableDriversList;
+                            searchNearestDriver();
                           },
                           color: Theme.of(context).accentColor,
                           child: Padding(
@@ -493,9 +659,18 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                Text("Request",style: TextStyle(fontSize: 20.0, fontWeight: FontWeight.bold,color: Colors.white),),
-                                Icon(FontAwesomeIcons.taxi,color: Colors.white,size: 26.0,),
-
+                                Text(
+                                  "Request",
+                                  style: TextStyle(
+                                      fontSize: 20.0,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white),
+                                ),
+                                Icon(
+                                  FontAwesomeIcons.taxi,
+                                  color: Colors.white,
+                                  size: 26.0,
+                                ),
                               ],
                             ),
                           ),
@@ -505,7 +680,7 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                   ),
                 ),
               ),
-            ) ,
+            ),
           ),
 
           Positioned(
@@ -514,14 +689,16 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
             left: 0.0,
             child: Container(
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.only(topLeft: Radius.circular(16.0),topRight: Radius.circular(16.0)),
+                borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(16.0),
+                    topRight: Radius.circular(16.0)),
                 color: Colors.white,
                 boxShadow: [
                   BoxShadow(
                     spreadRadius: 0.5,
                     blurRadius: 16.0,
                     color: Colors.black54,
-                    offset: Offset(0.7,0.7),
+                    offset: Offset(0.7, 0.7),
                   ),
                 ],
               ),
@@ -530,44 +707,41 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                 padding: const EdgeInsets.all(30.0),
                 child: Column(
                   children: [
-                    SizedBox(height: 12.0,),
-
                     SizedBox(
-                    width: double.infinity,
-                    // ignore: deprecated_member_use
-                    child: ColorizeAnimatedTextKit(
-
-                      onTap: (){
-                        print(" tap event");
-                      },
-                      text: [
-                        "Request A Ride ...",
-                        "Please Wait ...",
-                        "Finding a Driver ...."
-                      ],
-                      textStyle: TextStyle(
-                        fontSize: 55.0,
-                        fontFamily: 'Signatra',
-                      ),
-                      colors: [
-
+                      height: 12.0,
+                    ),
+                    SizedBox(
+                      width: double.infinity,
+                      // ignore: deprecated_member_use
+                      child: ColorizeAnimatedTextKit(
+                        onTap: () {
+                          print(" tap event");
+                        },
+                        text: [
+                          "Request A Ride ...",
+                          "Please Wait ...",
+                          "Finding a Driver ...."
+                        ],
+                        textStyle: TextStyle(
+                          fontSize: 55.0,
+                          fontFamily: 'Signatra',
+                        ),
+                        colors: [
                           Colors.green,
                           Colors.purple,
                           Colors.pink,
                           Colors.blue,
                           Colors.yellow,
                           Colors.red,
-
-                      ],
-                      textAlign: TextAlign.center,
-
-
+                        ],
+                        textAlign: TextAlign.center,
+                      ),
                     ),
+                    SizedBox(
+                      height: 22.0,
                     ),
-                    SizedBox(height: 22.0,),
-
                     GestureDetector(
-                      onTap: (){
+                      onTap: () {
                         cancelRideRequest();
                         resetApp();
                       },
@@ -577,20 +751,23 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
                         decoration: BoxDecoration(
                           color: Colors.white,
                           borderRadius: BorderRadius.circular(26.0),
-                          border: Border.all(width: 2.0,color: Colors.grey[300]),
-
+                          border:
+                              Border.all(width: 2.0, color: Colors.grey[300]),
                         ),
-                        child:Icon(Icons.close,size: 26.0),
+                        child: Icon(Icons.close, size: 26.0),
                       ),
                     ),
-
-                    SizedBox(height: 10.0,),
-
+                    SizedBox(
+                      height: 10.0,
+                    ),
                     Container(
                       width: double.infinity,
-                      child: Text("Cancel Ride",textAlign: TextAlign.center,style: TextStyle(fontSize: 12.0),),
+                      child: Text(
+                        "Cancel Ride",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 12.0),
+                      ),
                     ),
-
                   ],
                 ),
               ),
@@ -598,24 +775,24 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
           ),
         ],
       ),
-
     );
   }
 
-  Future<void> getPlaceDirection() async{
-
-
-    var initialPos = Provider.of<AppData>(context, listen: false).pickUpLocation;
+  Future<void> getPlaceDirection() async {
+    var initialPos =
+        Provider.of<AppData>(context, listen: false).pickUpLocation;
     var finalPos = Provider.of<AppData>(context, listen: false).dropOffLocation;
 
-    var pickUpLatLng = LatLng(initialPos.latitude,initialPos.longitude);
-    var dropOffLatLng = LatLng(finalPos.latitude,finalPos.longitude);
+    var pickUpLatLng = LatLng(initialPos.latitude, initialPos.longitude);
+    var dropOffLatLng = LatLng(finalPos.latitude, finalPos.longitude);
 
     showDialog(
         context: context,
-        builder:(BuildContext context) =>ProgressDialog(message: "Please wait..",)
-    );
-    var details = await AssistantMethods.obtainPlaceDirectionDetails(pickUpLatLng, dropOffLatLng);
+        builder: (BuildContext context) => ProgressDialog(
+              message: "Please wait..",
+            ));
+    var details = await AssistantMethods.obtainPlaceDirectionDetails(
+        pickUpLatLng, dropOffLatLng);
 
     setState(() {
       tripDirectionDetails = details;
@@ -628,64 +805,64 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
 
     PolylinePoints polylinePoints = PolylinePoints();
 
-    List<PointLatLng> decodedPolylinePointsResult = polylinePoints.decodePolyline(details.encodedPoints);
+    List<PointLatLng> decodedPolylinePointsResult =
+        polylinePoints.decodePolyline(details.encodedPoints);
     pLineCoordinates.clear();
 
-    if(decodedPolylinePointsResult.isNotEmpty){
-
+    if (decodedPolylinePointsResult.isNotEmpty) {
       decodedPolylinePointsResult.forEach((PointLatLng pointLatLng) {
-
-        pLineCoordinates.add(LatLng(pointLatLng.latitude, pointLatLng.longitude));
-
+        pLineCoordinates
+            .add(LatLng(pointLatLng.latitude, pointLatLng.longitude));
       });
     }
     polylineSet.clear();
 
-   setState(() {
-     Polyline polyline = Polyline(
-       color: Colors.pink,
-       polylineId:PolylineId("PolylineID"),
-       jointType: JointType.round,
-       points: pLineCoordinates,
-       width: 5,
-       startCap: Cap.roundCap,
-       endCap: Cap.roundCap,
-       geodesic: true,
+    setState(() {
+      Polyline polyline = Polyline(
+        color: Colors.pink,
+        polylineId: PolylineId("PolylineID"),
+        jointType: JointType.round,
+        points: pLineCoordinates,
+        width: 5,
+        startCap: Cap.roundCap,
+        endCap: Cap.roundCap,
+        geodesic: true,
+      );
+      polylineSet.add(polyline);
+    });
 
-     );
-     polylineSet.add(polyline);
+    LatLngBounds latLngBounds;
 
-   });
+    if (pickUpLatLng.latitude > dropOffLatLng.latitude &&
+        pickUpLatLng.longitude > dropOffLatLng.longitude) {
+      latLngBounds =
+          LatLngBounds(southwest: dropOffLatLng, northeast: pickUpLatLng);
+    } else if (pickUpLatLng.longitude > dropOffLatLng.longitude) {
+      latLngBounds = LatLngBounds(
+          southwest: LatLng(pickUpLatLng.latitude, dropOffLatLng.longitude),
+          northeast: LatLng(dropOffLatLng.latitude, pickUpLatLng.longitude));
+    } else if (pickUpLatLng.latitude > dropOffLatLng.latitude) {
+      latLngBounds = LatLngBounds(
+          southwest: LatLng(dropOffLatLng.latitude, pickUpLatLng.longitude),
+          northeast: LatLng(pickUpLatLng.latitude, dropOffLatLng.longitude));
+    } else {
+      latLngBounds =
+          LatLngBounds(southwest: pickUpLatLng, northeast: dropOffLatLng);
+    }
 
-   LatLngBounds latLngBounds;
+    newGoogleMapController
+        .animateCamera(CameraUpdate.newLatLngBounds(latLngBounds, 70));
 
-   if(pickUpLatLng.latitude > dropOffLatLng.latitude && pickUpLatLng.longitude > dropOffLatLng.longitude){
-
-     latLngBounds = LatLngBounds(southwest:dropOffLatLng, northeast: pickUpLatLng);
-
-   }else if(pickUpLatLng.longitude > dropOffLatLng.longitude){
-
-     latLngBounds = LatLngBounds(southwest:LatLng(pickUpLatLng.latitude,dropOffLatLng.longitude), northeast: LatLng(dropOffLatLng.latitude,pickUpLatLng.longitude));
-   }else if(pickUpLatLng.latitude > dropOffLatLng.latitude){
-
-     latLngBounds = LatLngBounds(southwest:LatLng(dropOffLatLng.latitude,pickUpLatLng.longitude), northeast: LatLng(pickUpLatLng.latitude,dropOffLatLng.longitude));
-   }else{
-     latLngBounds = LatLngBounds(southwest:pickUpLatLng, northeast: dropOffLatLng);
-   }
-   
-   newGoogleMapController.animateCamera(CameraUpdate.newLatLngBounds(latLngBounds, 70));
-
-   Marker pickUpLocMarker = Marker(
-
-     icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
-     infoWindow: InfoWindow(title: initialPos.placeId,snippet: "My location"),
-     position: pickUpLatLng,
-     markerId: MarkerId("PickUpId"),
-   );
+    Marker pickUpLocMarker = Marker(
+      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+      infoWindow: InfoWindow(title: initialPos.placeId, snippet: "My location"),
+      position: pickUpLatLng,
+      markerId: MarkerId("PickUpId"),
+    );
     Marker dropOffLocMarker = Marker(
-
       icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
-      infoWindow: InfoWindow(title: finalPos.placeId,snippet: "DropOff Location"),
+      infoWindow:
+          InfoWindow(title: finalPos.placeId, snippet: "DropOff Location"),
       position: dropOffLatLng,
       markerId: MarkerId("DropOffId"),
     );
@@ -702,8 +879,6 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
       radius: 12,
       strokeWidth: 4,
       strokeColor: Colors.redAccent,
-
-
     );
     Circle dropOffLocCircle = Circle(
       circleId: CircleId("DropOffId"),
@@ -712,14 +887,63 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
       radius: 12,
       strokeWidth: 4,
       strokeColor: Colors.blueAccent,
-
-
     );
 
     setState(() {
-
       circlesSet.add(pickUpLocCircle);
       circlesSet.add(dropOffLocCircle);
+    });
+  }
+
+  void createIconMarker() {
+    if (nearbyIcon == null) {
+      ImageConfiguration imageConfiguration = createLocalImageConfiguration(
+        context,
+        size: Size(2, 2),
+      );
+      BitmapDescriptor.fromAssetImage(imageConfiguration, "images/car_ios.png")
+          .then((value) {
+        nearbyIcon = value;
+      });
+    }
+  }
+
+  void noDriverFound() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) => NoDriverAvailableDialog(),
+    );
+  }
+
+  void searchNearestDriver() {
+    if (availableDrivers.length == 0) {
+      noDriverFound();
+      cancelRideRequest();
+
+      resetApp();
+
+      return;
+    }
+
+    var drivers = availableDrivers[0];
+    notifyDriver(drivers);
+    availableDrivers.removeAt(0);
+  }
+
+  void notifyDriver(NearbyAvailableDrivers driver) {
+    driversRef.child(driver.key).child("newRide").set(rideRequestRef.key);
+
+    driversRef
+        .child(driver.key)
+        .child("token")
+        .once()
+        .then((DataSnapshot snap) {
+      if (snap.value != null) {
+        String token = snap.value.toString();
+        AssistantMethods.sendNotificationToDriver(
+            token, context, rideRequestRef.key);
+      }
     });
   }
 }
